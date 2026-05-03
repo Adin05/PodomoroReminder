@@ -1,0 +1,36 @@
+# ── Python ─────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.egg-info/
+*.egg
+dist/
+build/
+*.spec
+*.manifest
+
+# ── Virtual Environment ───────────────────────
+venv/
+.venv/
+env/
+.env/
+
+# ── PyInstaller ───────────────────────────────
+*.exe
+*.dll
+
+# ── IDE ───────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS ────────────────────────────────────────
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# ── Config (local user data, not committed) ──
+*.db
