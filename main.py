@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QLabel, QPushButton, QSpinBox, QFileDialog, QSystemTrayIcon,
     QMenu, QCheckBox, QGroupBox, QFrame
 )
-from PyQt6.QtCore import Qt, QTimer, QUrl
+from PyQt6.QtCore import Qt, QTimer, QUrl, QPoint
 from PyQt6.QtGui import QIcon, QFont, QAction, QPixmap, QPainter, QColor
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 
@@ -203,6 +203,143 @@ QLabel#soundPathLabel {
 }
 """
 
+# ─── Floating Widget Stylesheet ───────────────────────────────────────────────
+
+WIDGET_STYLESHEET = """
+QWidget#floatingWidget {
+    background-color: rgba(17, 17, 17, 230);
+    border-radius: 16px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+QLabel#widgetTimer {
+    color: #ffffff;
+    font-size: 28px;
+    font-weight: bold;
+    font-family: "Consolas", "Courier New", monospace;
+    background: transparent;
+}
+
+QLabel#widgetPhase {
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 2px;
+    background: transparent;
+}
+
+QLabel#widgetPhase[phase="work"] {
+    color: #66ff99;
+}
+
+QLabel#widgetPhase[phase="break"] {
+    color: #66ccff;
+}
+
+QPushButton#widgetCloseBtn {
+    background: transparent;
+    border: none;
+    color: rgba(255, 255, 255, 0.4);
+    font-size: 14px;
+    font-weight: bold;
+    padding: 0;
+    min-width: 20px;
+    max-width: 20px;
+    min-height: 20px;
+    max-height: 20px;
+}
+
+QPushButton#widgetCloseBtn:hover {
+    color: #ff6666;
+}
+"""
+
+
+class FloatingWidget(QWidget):
+    """A small, frameless, always-on-top, draggable countdown overlay widget."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        # Frameless, always-on-top, tool window (no taskbar entry)
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.Tool
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setObjectName("floatingWidget")
+        self.setFixedSize(180, 70)
+        self.setStyleSheet(WIDGET_STYLESHEET)
+
+        self._drag_pos: QPoint | None = None
+
+        # ── Layout ────────────────────────────────────────────────────
+        container = QWidget(self)
+        container.setObjectName("floatingWidget")
+        container.setGeometry(0, 0, 180, 70)
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(14, 8, 14, 8)
+        layout.setSpacing(2)
+
+        # Top row: phase label + close button
+        top_row = QHBoxLayout()
+        self.phase_label = QLabel("● WORK")
+        self.phase_label.setObjectName("widgetPhase")
+        self.phase_label.setProperty("phase", "work")
+        top_row.addWidget(self.phase_label)
+        top_row.addStretch()
+
+        close_btn = QPushButton("✕")
+        close_btn.setObjectName("widgetCloseBtn")
+        close_btn.setToolTip("Hide widget")
+        close_btn.clicked.connect(self.hide)
+        top_row.addWidget(close_btn)
+
+        layout.addLayout(top_row)
+
+        # Timer display
+        self.timer_label = QLabel("25:00")
+        self.timer_label.setObjectName("widgetTimer")
+        self.timer_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.timer_label)
+
+        # Position at top-right of the screen
+        self._position_default()
+
+    def _position_default(self):
+        """Place the widget at the top-right corner of the primary screen."""
+        screen = QApplication.primaryScreen()
+        if screen:
+            geo = screen.availableGeometry()
+            x = geo.right() - self.width() - 20
+            y = geo.top() + 20
+            self.move(x, y)
+
+    def update_display(self, time_text: str, phase_text: str, phase_key: str):
+        """Update the timer and phase shown on the widget."""
+        self.timer_label.setText(time_text)
+        self.phase_label.setText(f"● {phase_text}")
+        self.phase_label.setProperty("phase", phase_key)
+        self.phase_label.style().unpolish(self.phase_label)
+        self.phase_label.style().polish(self.phase_label)
+
+    # ── Dragging ──────────────────────────────────────────────────────
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_pos is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_pos)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self._drag_pos = None
+
 
 class PomodoroApp(QMainWindow):
     """Main Pomodoro Reminder application window."""
@@ -239,6 +376,9 @@ class PomodoroApp(QMainWindow):
         self._save_debounce.setSingleShot(True)
         self._save_debounce.setInterval(500)
         self._save_debounce.timeout.connect(self._save_current_config)
+
+        # ── Floating widget ────────────────────────────────────────────
+        self.floating_widget = FloatingWidget()
 
         # ── UI ─────────────────────────────────────────────────────────
         self._build_ui()
@@ -389,6 +529,14 @@ class PomodoroApp(QMainWindow):
 
         tray_menu.addSeparator()
 
+        self.tray_widget_action = QAction("Show Widget", self)
+        self.tray_widget_action.setCheckable(True)
+        self.tray_widget_action.setChecked(True)
+        self.tray_widget_action.triggered.connect(self._on_toggle_widget)
+        tray_menu.addAction(self.tray_widget_action)
+
+        tray_menu.addSeparator()
+
         quit_action = QAction("Quit", self)
         quit_action.triggered.connect(self._quit_app)
         tray_menu.addAction(quit_action)
@@ -444,7 +592,8 @@ class PomodoroApp(QMainWindow):
 
         self.tick_timer.start()
 
-        # Minimize to tray when starting
+        # Show floating widget & minimize to tray when starting
+        self._show_floating_widget()
         self.hide()
         self.tray_icon.showMessage(
             "Pomodoro Started",
@@ -461,6 +610,7 @@ class PomodoroApp(QMainWindow):
         self._set_phase("IDLE", "idle")
         self._update_timer_display(self.work_spin.value() * 60)
         self._toggle_buttons(running=False)
+        self.floating_widget.hide()
 
     def _on_tick(self):
         """Handle each timer tick (1 second)."""
@@ -483,7 +633,13 @@ class PomodoroApp(QMainWindow):
             # Update tray tooltip with remaining time
             mins, secs = divmod(self.remaining_seconds, 60)
             phase_name = "Work" if self.is_work_phase else "Break"
+            phase_key = "work" if self.is_work_phase else "break"
             self.tray_icon.setToolTip(f"Pomodoro - {phase_name}: {mins:02d}:{secs:02d}")
+
+            # Update floating widget
+            self.floating_widget.update_display(
+                f"{mins:02d}:{secs:02d}", phase_name.upper(), phase_key
+            )
 
     def _on_phase_complete(self):
         """Handle phase completion (work → break or break → work)."""
@@ -661,8 +817,21 @@ class PomodoroApp(QMainWindow):
         )
         self.show()
 
+    def _on_toggle_widget(self, checked: bool):
+        """Toggle the floating widget visibility from tray menu."""
+        if checked and self.is_running:
+            self.floating_widget.show()
+        else:
+            self.floating_widget.hide()
+
+    def _show_floating_widget(self):
+        """Show the floating widget if enabled."""
+        if self.tray_widget_action.isChecked():
+            self.floating_widget.show()
+
     def _quit_app(self):
         """Fully quit the application."""
+        self.floating_widget.hide()
         self.tray_icon.hide()
         QApplication.instance().quit()
 
