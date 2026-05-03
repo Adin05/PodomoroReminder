@@ -402,7 +402,7 @@ class PomodoroApp(QMainWindow):
 
         # ── Window settings ────────────────────────────────────────────
         self.setWindowTitle("Pomodoro Reminder")
-        self.setFixedSize(420, 580)
+        self.setFixedSize(420, 620)
         self.setWindowIcon(create_app_icon())
 
     # ═══════════════════════════════════════════════════════════════════
