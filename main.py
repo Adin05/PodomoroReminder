@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QLabel, QPushButton, QSpinBox, QFileDialog, QSystemTrayIcon,
     QMenu, QCheckBox, QGroupBox, QFrame
 )
-from PyQt6.QtCore import Qt, QTimer, QUrl, QPoint
+from PyQt6.QtCore import Qt, QTimer, QUrl, QPoint, pyqtSignal
 from PyQt6.QtGui import QIcon, QFont, QAction, QPixmap, QPainter, QColor
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 
@@ -258,6 +258,8 @@ QPushButton#widgetCloseBtn:hover {
 class FloatingWidget(QWidget):
     """A small, frameless, always-on-top, draggable countdown overlay widget."""
 
+    visibility_changed = pyqtSignal(bool)
+
     def __init__(self, parent=None):
         super().__init__(parent)
 
@@ -340,6 +342,14 @@ class FloatingWidget(QWidget):
     def mouseReleaseEvent(self, event):
         self._drag_pos = None
 
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self.visibility_changed.emit(False)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.visibility_changed.emit(True)
+
 
 class PomodoroApp(QMainWindow):
     """Main Pomodoro Reminder application window."""
@@ -384,6 +394,11 @@ class PomodoroApp(QMainWindow):
         self._build_ui()
         self._build_tray()
         self._apply_config()
+
+        # Sync tray checkbox and UI checkbox when widget visibility changes
+        self.floating_widget.visibility_changed.connect(
+            self._on_widget_visibility_changed
+        )
 
         # ── Window settings ────────────────────────────────────────────
         self.setWindowTitle("Pomodoro Reminder")
@@ -500,6 +515,12 @@ class PomodoroApp(QMainWindow):
         self.startup_check = QCheckBox("Run at Windows startup")
         self.startup_check.stateChanged.connect(self._on_startup_changed)
         settings_layout.addWidget(self.startup_check)
+
+        # Show floating widget
+        self.widget_check = QCheckBox("Show floating widget")
+        self.widget_check.setChecked(True)
+        self.widget_check.stateChanged.connect(self._on_widget_checkbox_changed)
+        settings_layout.addWidget(self.widget_check)
 
         layout.addWidget(settings_group)
         layout.addStretch()
@@ -817,8 +838,31 @@ class PomodoroApp(QMainWindow):
         )
         self.show()
 
+    def _on_widget_visibility_changed(self, visible: bool):
+        """Sync both tray action and UI checkbox when widget visibility changes."""
+        self.tray_widget_action.blockSignals(True)
+        self.widget_check.blockSignals(True)
+        self.tray_widget_action.setChecked(visible)
+        self.widget_check.setChecked(visible)
+        self.tray_widget_action.blockSignals(False)
+        self.widget_check.blockSignals(False)
+
+    def _on_widget_checkbox_changed(self):
+        """Handle the UI checkbox for floating widget."""
+        checked = self.widget_check.isChecked()
+        self.tray_widget_action.blockSignals(True)
+        self.tray_widget_action.setChecked(checked)
+        self.tray_widget_action.blockSignals(False)
+        if checked and self.is_running:
+            self.floating_widget.show()
+        else:
+            self.floating_widget.hide()
+
     def _on_toggle_widget(self, checked: bool):
         """Toggle the floating widget visibility from tray menu."""
+        self.widget_check.blockSignals(True)
+        self.widget_check.setChecked(checked)
+        self.widget_check.blockSignals(False)
         if checked and self.is_running:
             self.floating_widget.show()
         else:
@@ -826,7 +870,7 @@ class PomodoroApp(QMainWindow):
 
     def _show_floating_widget(self):
         """Show the floating widget if enabled."""
-        if self.tray_widget_action.isChecked():
+        if self.widget_check.isChecked():
             self.floating_widget.show()
 
     def _quit_app(self):
