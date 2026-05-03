@@ -10,23 +10,15 @@ import time
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QSpinBox, QFileDialog, QSystemTrayIcon,
-    QMenu, QCheckBox, QGroupBox, QFrame, QMessageBox, QStyle
+    QMenu, QCheckBox, QGroupBox, QFrame
 )
-from PyQt6.QtCore import Qt, QTimer, QSize, QUrl
+from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtGui import QIcon, QFont, QAction, QPixmap, QPainter, QColor
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 
 from config import load_config, save_config, set_run_at_startup
 
 
-# ─── Embedded SVG Icon (black circle with white "P") ──────────────────────────
-
-ICON_SVG = """<?xml version="1.0" encoding="UTF-8"?>
-<svg width="64" height="64" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
-  <circle cx="32" cy="32" r="30" fill="#111111" stroke="#ffffff" stroke-width="2"/>
-  <text x="32" y="42" text-anchor="middle" font-family="Arial, sans-serif"
-        font-size="36" font-weight="bold" fill="#ffffff">P</text>
-</svg>"""
 
 
 def create_app_icon() -> QIcon:
@@ -226,6 +218,9 @@ class PomodoroApp(QMainWindow):
         self.is_work_phase = True
         self.remaining_seconds = 0
         self.total_work_seconds_today = 0  # Track total work time in session
+        self._work_accumulated = 0         # Work seconds from prior completed phases
+        self.phase_start_time = 0.0        # monotonic timestamp for drift-free timing
+        self.phase_duration = 0            # total seconds for current phase
 
         # ── Timer ──────────────────────────────────────────────────────
         self.tick_timer = QTimer(self)
@@ -237,6 +232,13 @@ class PomodoroApp(QMainWindow):
         self.audio_output = QAudioOutput(self)
         self.media_player.setAudioOutput(self.audio_output)
         self.audio_output.setVolume(1.0)
+        self.media_player.errorOccurred.connect(self._on_media_error)
+
+        # ── Debounce timer for settings saves ─────────────────────────
+        self._save_debounce = QTimer(self)
+        self._save_debounce.setSingleShot(True)
+        self._save_debounce.setInterval(500)
+        self._save_debounce.timeout.connect(self._save_current_config)
 
         # ── UI ─────────────────────────────────────────────────────────
         self._build_ui()
@@ -432,7 +434,9 @@ class PomodoroApp(QMainWindow):
 
         self.is_running = True
         self.is_work_phase = True
-        self.remaining_seconds = self.work_spin.value() * 60
+        self.phase_duration = self.work_spin.value() * 60
+        self.phase_start_time = time.monotonic()
+        self.remaining_seconds = self.phase_duration
 
         self._set_phase("WORK", "work")
         self._update_timer_display(self.remaining_seconds)
@@ -463,12 +467,14 @@ class PomodoroApp(QMainWindow):
         if not self.is_running:
             return
 
+        # Compute remaining time from wall clock to prevent drift
+        elapsed = int(time.monotonic() - self.phase_start_time)
+        self.remaining_seconds = self.phase_duration - elapsed
+
         # Track work time
         if self.is_work_phase:
-            self.total_work_seconds_today += 1
+            self.total_work_seconds_today = self._work_accumulated + elapsed
             self._update_total_work_display()
-
-        self.remaining_seconds -= 1
 
         if self.remaining_seconds <= 0:
             self._on_phase_complete()
@@ -485,9 +491,16 @@ class PomodoroApp(QMainWindow):
         self._play_alarm()
 
         if self.is_work_phase:
+            # Accumulate completed work phase time
+            self._work_accumulated += self.phase_duration
+            self.total_work_seconds_today = self._work_accumulated
+            self._update_total_work_display()
+
             # Work phase done → start break
             self.is_work_phase = False
-            self.remaining_seconds = self.break_spin.value() * 60
+            self.phase_duration = self.break_spin.value() * 60
+            self.phase_start_time = time.monotonic()
+            self.remaining_seconds = self.phase_duration
             self._set_phase("BREAK", "break")
 
             self.tray_icon.showMessage(
@@ -499,7 +512,9 @@ class PomodoroApp(QMainWindow):
         else:
             # Break phase done → start work
             self.is_work_phase = True
-            self.remaining_seconds = self.work_spin.value() * 60
+            self.phase_duration = self.work_spin.value() * 60
+            self.phase_start_time = time.monotonic()
+            self.remaining_seconds = self.phase_duration
             self._set_phase("WORK", "work")
 
             self.tray_icon.showMessage(
@@ -511,6 +526,9 @@ class PomodoroApp(QMainWindow):
 
         self._update_timer_display(self.remaining_seconds)
         self.tick_timer.start()
+
+        # Bring window to front so the user notices the phase change
+        self._force_show_on_top()
 
     # ═══════════════════════════════════════════════════════════════════
     # UI Helpers
@@ -581,15 +599,20 @@ class PomodoroApp(QMainWindow):
         self.sound_path_label.setText("Default beep")
         self._save_current_config()
 
+    def _on_media_error(self, error, message):
+        """Handle media player errors by falling back to system beep."""
+        print(f"Media playback error: {message}")
+        QApplication.beep()
+
     # ═══════════════════════════════════════════════════════════════════
     # Settings callbacks
     # ═══════════════════════════════════════════════════════════════════
 
     def _on_settings_changed(self):
-        """Handle work/break spin changes."""
+        """Handle work/break spin changes (debounced save)."""
         if not self.is_running:
             self._update_timer_display(self.work_spin.value() * 60)
-        self._save_current_config()
+        self._save_debounce.start()  # Restart debounce timer
 
     def _on_startup_changed(self, state):
         """Handle startup checkbox toggle."""
@@ -612,6 +635,31 @@ class PomodoroApp(QMainWindow):
         self.showNormal()
         self.activateWindow()
         self.raise_()
+
+    def _force_show_on_top(self):
+        """Force-show the window above all others (used on phase change).
+
+        Windows blocks background apps from stealing focus, so we
+        temporarily set the always-on-top flag, then remove it after
+        a short delay so the window returns to normal z-order.
+        """
+        self.showNormal()
+        self.setWindowFlags(
+            self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint
+        )
+        self.show()
+        self.activateWindow()
+        self.raise_()
+
+        # Remove the stay-on-top flag after 3 seconds
+        QTimer.singleShot(3000, self._remove_stay_on_top)
+
+    def _remove_stay_on_top(self):
+        """Remove the temporary always-on-top flag."""
+        self.setWindowFlags(
+            self.windowFlags() & ~Qt.WindowType.WindowStaysOnTopHint
+        )
+        self.show()
 
     def _quit_app(self):
         """Fully quit the application."""

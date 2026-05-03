@@ -82,20 +82,13 @@ def save_config(config: dict):
         conn.close()
 
 
-def get_startup_shortcut_path() -> str:
-    """Get the Windows Startup folder shortcut path."""
-    startup_folder = os.path.join(
-        os.environ.get("APPDATA", ""),
-        "Microsoft", "Windows", "Start Menu", "Programs", "Startup"
-    )
-    return os.path.join(startup_folder, "PomodoroReminder.lnk")
-
 
 def _get_app_path() -> str:
     """Get the path to the running application (exe or script)."""
     if getattr(sys, 'frozen', False):
         return sys.executable
-    return f'"{sys.executable}" "{os.path.abspath("main.py")}"'
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    return f'"{sys.executable}" "{os.path.join(script_dir, "main.py")}"'
 
 
 def _open_run_key():
@@ -114,7 +107,10 @@ def _open_run_key():
 
 def set_run_at_startup(enabled: bool):
     """Enable or disable run at Windows startup via registry."""
-    import winreg
+    try:
+        import winreg
+    except ImportError:
+        return
 
     key = _open_run_key()
     if key is None:
