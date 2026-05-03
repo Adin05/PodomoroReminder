@@ -91,40 +91,45 @@ def get_startup_shortcut_path() -> str:
     return os.path.join(startup_folder, "PomodoroReminder.lnk")
 
 
-def set_run_at_startup(enabled: bool):
-    """Enable or disable run at Windows startup."""
-    shortcut_path = get_startup_shortcut_path()
+def _get_app_path() -> str:
+    """Get the path to the running application (exe or script)."""
+    if getattr(sys, 'frozen', False):
+        return sys.executable
+    return f'"{sys.executable}" "{os.path.abspath("main.py")}"'
 
-    if enabled:
-        try:
-            import winreg
-            # Use registry method for startup
-            key = winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                r"Software\Microsoft\Windows\CurrentVersion\Run",
-                0, winreg.KEY_SET_VALUE
-            )
-            # Get the path to the Python script or executable
-            if getattr(sys, 'frozen', False):
-                app_path = sys.executable
-            else:
-                app_path = f'"{sys.executable}" "{os.path.abspath("main.py")}"'
+
+def _open_run_key():
+    """Open the Windows Run registry key. Returns (key, success)."""
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0, winreg.KEY_SET_VALUE
+        )
+        return key
+    except Exception:
+        return None
+
+
+def set_run_at_startup(enabled: bool):
+    """Enable or disable run at Windows startup via registry."""
+    import winreg
+
+    key = _open_run_key()
+    if key is None:
+        return
+
+    try:
+        if enabled:
+            app_path = _get_app_path()
             winreg.SetValueEx(key, "PomodoroReminder", 0, winreg.REG_SZ, app_path)
-            winreg.CloseKey(key)
-        except Exception as e:
-            print(f"Failed to set startup: {e}")
-    else:
-        try:
-            import winreg
-            key = winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                r"Software\Microsoft\Windows\CurrentVersion\Run",
-                0, winreg.KEY_SET_VALUE
-            )
+        else:
             try:
                 winreg.DeleteValue(key, "PomodoroReminder")
             except FileNotFoundError:
                 pass
-            winreg.CloseKey(key)
-        except Exception as e:
-            print(f"Failed to remove startup: {e}")
+    except Exception as e:
+        print(f"Startup registry update failed: {e}")
+    finally:
+        winreg.CloseKey(key)
