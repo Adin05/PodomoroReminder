@@ -16,7 +16,7 @@ from PyQt6.QtCore import Qt, QTimer, QUrl, QPoint, pyqtSignal
 from PyQt6.QtGui import QIcon, QFont, QAction, QPixmap, QPainter, QColor
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 
-from config import load_config, save_config, set_run_at_startup
+from config import load_config, save_config
 
 
 
@@ -511,14 +511,10 @@ class PomodoroApp(QMainWindow):
 
         settings_layout.addLayout(sound_row)
 
-        # Run at startup
-        self.startup_check = QCheckBox("Run at Windows startup")
-        self.startup_check.stateChanged.connect(self._on_startup_changed)
-        settings_layout.addWidget(self.startup_check)
 
         # Show floating widget
         self.widget_check = QCheckBox("Show floating widget")
-        self.widget_check.setChecked(True)
+        self.widget_check.setChecked(True)  # Default; overwritten by _apply_config
         self.widget_check.stateChanged.connect(self._on_widget_checkbox_changed)
         settings_layout.addWidget(self.widget_check)
 
@@ -574,7 +570,7 @@ class PomodoroApp(QMainWindow):
         """Apply loaded config to UI."""
         self.work_spin.setValue(self.config.get("work_minutes", 30))
         self.break_spin.setValue(self.config.get("break_minutes", 5))
-        self.startup_check.setChecked(self.config.get("run_at_startup", False))
+        self.widget_check.setChecked(self.config.get("show_widget", True))
 
         sound_path = self.config.get("alarm_sound_path", "")
         if sound_path and os.path.exists(sound_path):
@@ -589,7 +585,7 @@ class PomodoroApp(QMainWindow):
         """Save current settings to config file."""
         self.config["work_minutes"] = self.work_spin.value()
         self.config["break_minutes"] = self.break_spin.value()
-        self.config["run_at_startup"] = self.startup_check.isChecked()
+        self.config["show_widget"] = self.widget_check.isChecked()
         save_config(self.config)
 
     # ═══════════════════════════════════════════════════════════════════
@@ -631,7 +627,11 @@ class PomodoroApp(QMainWindow):
         self._set_phase("IDLE", "idle")
         self._update_timer_display(self.work_spin.value() * 60)
         self._toggle_buttons(running=False)
+
+        # Hide widget without unchecking the user's preference
+        self.floating_widget.visibility_changed.disconnect(self._on_widget_visibility_changed)
         self.floating_widget.hide()
+        self.floating_widget.visibility_changed.connect(self._on_widget_visibility_changed)
 
     def _on_tick(self):
         """Handle each timer tick (1 second)."""
@@ -791,12 +791,6 @@ class PomodoroApp(QMainWindow):
             self._update_timer_display(self.work_spin.value() * 60)
         self._save_debounce.start()  # Restart debounce timer
 
-    def _on_startup_changed(self, state):
-        """Handle startup checkbox toggle."""
-        enabled = self.startup_check.isChecked()
-        self.config["run_at_startup"] = enabled
-        set_run_at_startup(enabled)
-        self._save_current_config()
 
     # ═══════════════════════════════════════════════════════════════════
     # Tray / Window
@@ -857,6 +851,7 @@ class PomodoroApp(QMainWindow):
             self.floating_widget.show()
         else:
             self.floating_widget.hide()
+        self._save_current_config()
 
     def _on_toggle_widget(self, checked: bool):
         """Toggle the floating widget visibility from tray menu."""
@@ -867,6 +862,7 @@ class PomodoroApp(QMainWindow):
             self.floating_widget.show()
         else:
             self.floating_widget.hide()
+        self._save_current_config()
 
     def _show_floating_widget(self):
         """Show the floating widget if enabled."""
