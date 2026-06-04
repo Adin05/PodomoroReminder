@@ -16,6 +16,7 @@ A minimal black & white desktop Pomodoro timer for Windows, built with Python an
 - **System Tray Integration** — Minimizes to tray on close or minimize; runs silently in background
 - **Tray Notifications** — Get notified when work/break phases change
 - **Session Work Tracker** — Tracks total work time per session in `HH:MM:SS`
+- **Daily Productivity Log** — Saves daily focus time and completed Pomodoro sessions in SQLite
 - **Run at Startup** — Optional Windows startup registration via registry
 - **SQLite Config Storage** — Settings persisted in `~/.pomodoro_reminder/config.db`
 - **Clean B&W UI** — Monochrome design with no distractions
@@ -30,6 +31,7 @@ A minimal black & white desktop Pomodoro timer for Windows, built with Python an
 │   Session work: 00:05:00  │
 │                           │
 │   [▶ START]  [■ STOP]     │
+│   Today: 1h 30m focus     │
 │  ─────────────────────── │
 │  Settings                 │
 │   Work (min):  [30]       │
@@ -111,6 +113,8 @@ Settings are stored in a SQLite database at:
 | `break_minutes`    | int    | 5       | Break duration (minutes)       |
 | `alarm_sound_path` | string | ""      | Path to custom alarm sound     |
 | `run_at_startup`   | bool   | false   | Enable Windows startup         |
+
+Daily productivity is stored in the `productivity_log` table with one row per date.
 
 ## License
 

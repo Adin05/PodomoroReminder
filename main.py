@@ -6,6 +6,7 @@ A simple black & white Pomodoro timer with system tray support.
 import sys
 import os
 import time
+from datetime import date
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -16,7 +17,13 @@ from PyQt6.QtCore import Qt, QTimer, QUrl, QPoint, pyqtSignal
 from PyQt6.QtGui import QIcon, QFont, QAction, QPixmap, QPainter, QColor
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 
-from config import load_config, save_config
+from config import (
+    add_productivity_log,
+    get_productivity_entry,
+    get_productivity_log,
+    load_config,
+    save_config,
+)
 
 
 
@@ -201,6 +208,17 @@ QLabel#soundPathLabel {
     color: #888888;
     font-style: italic;
 }
+
+QLabel#productivityStats {
+    font-size: 13px;
+    font-weight: 600;
+}
+
+QLabel#dailyLogLabel {
+    font-size: 12px;
+    color: #555555;
+    line-height: 140%;
+}
 """
 
 # ─── Floating Widget Stylesheet ───────────────────────────────────────────────
@@ -366,6 +384,12 @@ class PomodoroApp(QMainWindow):
         self.remaining_seconds = 0
         self.total_work_seconds_today = 0  # Track total work time in session
         self._work_accumulated = 0         # Work seconds from prior completed phases
+        self._logged_work_seconds_this_phase = 0
+        self.current_log_date = date.today().isoformat()
+        today_log = get_productivity_entry(self.current_log_date)
+        self.daily_work_seconds = today_log["work_seconds"]
+        self.daily_completed_sessions = today_log["completed_sessions"]
+        self.recent_productivity_log = get_productivity_log(limit=7)
         self.phase_start_time = 0.0        # monotonic timestamp for drift-free timing
         self.phase_duration = 0            # total seconds for current phase
 
@@ -402,7 +426,7 @@ class PomodoroApp(QMainWindow):
 
         # ── Window settings ────────────────────────────────────────────
         self.setWindowTitle("Pomodoro Reminder")
-        self.setFixedSize(420, 620)
+        self.setFixedSize(420, 760)
         self.setWindowIcon(create_app_icon())
 
     # ═══════════════════════════════════════════════════════════════════
@@ -458,6 +482,23 @@ class PomodoroApp(QMainWindow):
         btn_layout.addWidget(self.stop_btn)
 
         layout.addLayout(btn_layout)
+
+        # ── Productivity log ───────────────────────────────────────────
+        log_group = QGroupBox("Daily Productivity")
+        log_layout = QVBoxLayout(log_group)
+        log_layout.setSpacing(8)
+
+        self.today_work_label = QLabel()
+        self.today_work_label.setObjectName("productivityStats")
+        self.today_work_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        log_layout.addWidget(self.today_work_label)
+
+        self.daily_log_label = QLabel()
+        self.daily_log_label.setObjectName("dailyLogLabel")
+        self.daily_log_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        log_layout.addWidget(self.daily_log_label)
+
+        layout.addWidget(log_group)
 
         # ── Separator ─────────────────────────────────────────────────
         sep = QFrame()
@@ -520,6 +561,7 @@ class PomodoroApp(QMainWindow):
 
         layout.addWidget(settings_group)
         layout.addStretch()
+        self._update_productivity_log_display()
 
     def _build_tray(self):
         """Build the system tray icon and menu."""
@@ -597,10 +639,12 @@ class PomodoroApp(QMainWindow):
         if self.is_running:
             return
 
+        self._refresh_today_log()
         self.is_running = True
         self.is_work_phase = True
         self.phase_duration = self.work_spin.value() * 60
         self.phase_start_time = time.monotonic()
+        self._logged_work_seconds_this_phase = 0
         self.remaining_seconds = self.phase_duration
 
         self._set_phase("WORK", "work")
@@ -622,6 +666,7 @@ class PomodoroApp(QMainWindow):
     def _on_stop(self):
         """Stop the timer and reset."""
         self.is_running = False
+        self._record_current_work_progress()
         self.tick_timer.stop()
 
         self._set_phase("IDLE", "idle")
@@ -640,12 +685,17 @@ class PomodoroApp(QMainWindow):
 
         # Compute remaining time from wall clock to prevent drift
         elapsed = int(time.monotonic() - self.phase_start_time)
+        elapsed = min(elapsed, self.phase_duration)
         self.remaining_seconds = self.phase_duration - elapsed
 
         # Track work time
         if self.is_work_phase:
             self.total_work_seconds_today = self._work_accumulated + elapsed
             self._update_total_work_display()
+            self._update_productivity_log_display(
+                current_work_seconds=elapsed,
+                refresh_history=False,
+            )
 
         if self.remaining_seconds <= 0:
             self._on_phase_complete()
@@ -671,10 +721,12 @@ class PomodoroApp(QMainWindow):
             # Accumulate completed work phase time
             self._work_accumulated += self.phase_duration
             self.total_work_seconds_today = self._work_accumulated
+            self._record_current_work_progress(completed_session=True)
             self._update_total_work_display()
 
             # Work phase done → start break
             self.is_work_phase = False
+            self._logged_work_seconds_this_phase = 0
             self.phase_duration = self.break_spin.value() * 60
             self.phase_start_time = time.monotonic()
             self.remaining_seconds = self.phase_duration
@@ -689,6 +741,7 @@ class PomodoroApp(QMainWindow):
         else:
             # Break phase done → start work
             self.is_work_phase = True
+            self._logged_work_seconds_this_phase = 0
             self.phase_duration = self.work_spin.value() * 60
             self.phase_start_time = time.monotonic()
             self.remaining_seconds = self.phase_duration
@@ -721,6 +774,86 @@ class PomodoroApp(QMainWindow):
         hrs, remainder = divmod(self.total_work_seconds_today, 3600)
         mins, secs = divmod(remainder, 60)
         self.total_work_label.setText(f"Session work: {hrs:02d}:{mins:02d}:{secs:02d}")
+
+    def _format_duration(self, total_seconds: int) -> str:
+        """Format seconds as a compact productivity duration."""
+        hrs, remainder = divmod(max(0, int(total_seconds)), 3600)
+        mins, _ = divmod(remainder, 60)
+        if hrs:
+            return f"{hrs}h {mins:02d}m"
+        return f"{mins}m"
+
+    def _refresh_today_log(self):
+        """Load a fresh daily log when the calendar date changes."""
+        today = date.today().isoformat()
+        if today == self.current_log_date:
+            return
+
+        self.current_log_date = today
+        today_log = get_productivity_entry(self.current_log_date)
+        self.daily_work_seconds = today_log["work_seconds"]
+        self.daily_completed_sessions = today_log["completed_sessions"]
+        self.recent_productivity_log = get_productivity_log(limit=7)
+        self._update_productivity_log_display()
+
+    def _record_current_work_progress(self, completed_session: bool = False):
+        """Persist the unlogged part of the current work phase."""
+        if not self.is_work_phase or self.phase_start_time <= 0:
+            return
+
+        elapsed = int(time.monotonic() - self.phase_start_time)
+        elapsed = min(max(0, elapsed), self.phase_duration)
+        new_work_seconds = elapsed - self._logged_work_seconds_this_phase
+        completed_sessions = 1 if completed_session else 0
+
+        if new_work_seconds <= 0 and completed_sessions <= 0:
+            return
+
+        add_productivity_log(
+            self.current_log_date,
+            work_seconds=new_work_seconds,
+            completed_sessions=completed_sessions,
+        )
+        self.daily_work_seconds += max(0, new_work_seconds)
+        self.daily_completed_sessions += completed_sessions
+        self._logged_work_seconds_this_phase += max(0, new_work_seconds)
+        self._update_productivity_log_display(refresh_history=True)
+
+    def _update_productivity_log_display(
+        self,
+        current_work_seconds: int = 0,
+        refresh_history: bool = False,
+    ):
+        """Refresh today's productivity and recent daily log."""
+        live_today_seconds = self.daily_work_seconds
+        if self.is_running and self.is_work_phase:
+            live_today_seconds += max(
+                0,
+                int(current_work_seconds) - self._logged_work_seconds_this_phase,
+            )
+
+        self.today_work_label.setText(
+            "Today: "
+            f"{self._format_duration(live_today_seconds)} focus "
+            f"• {self.daily_completed_sessions} completed"
+        )
+
+        if refresh_history:
+            self.recent_productivity_log = get_productivity_log(limit=7)
+
+        logs = self.recent_productivity_log
+        if not logs:
+            self.daily_log_label.setText("No saved productivity log yet.")
+            return
+
+        lines = ["Last 7 days:"]
+        for item in logs:
+            lines.append(
+                f"{item['log_date']}  "
+                f"{self._format_duration(item['work_seconds'])}  "
+                f"({item['completed_sessions']} sessions)"
+            )
+        self.daily_log_label.setText("\n".join(lines))
 
     def _set_phase(self, text: str, phase_key: str):
         """Update the phase label text and style."""

@@ -4,6 +4,7 @@ Configuration management for Pomodoro Reminder using SQLite storage.
 
 import sqlite3
 import os
+from datetime import datetime
 
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".pomodoro_reminder")
 DB_FILE = os.path.join(CONFIG_DIR, "config.db")
@@ -32,6 +33,14 @@ def _get_connection() -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS config (
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS productivity_log (
+            log_date           TEXT PRIMARY KEY,
+            work_seconds       INTEGER NOT NULL DEFAULT 0,
+            completed_sessions INTEGER NOT NULL DEFAULT 0,
+            updated_at         TEXT NOT NULL
         )
     """)
     conn.commit()
@@ -80,4 +89,85 @@ def save_config(config: dict):
     finally:
         conn.close()
 
+
+def add_productivity_log(log_date: str, work_seconds: int = 0, completed_sessions: int = 0):
+    """Add daily productivity totals for the given ISO date."""
+    if work_seconds <= 0 and completed_sessions <= 0:
+        return
+
+    conn = _get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO productivity_log (
+                log_date, work_seconds, completed_sessions, updated_at
+            )
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(log_date) DO UPDATE SET
+                work_seconds = work_seconds + excluded.work_seconds,
+                completed_sessions = completed_sessions + excluded.completed_sessions,
+                updated_at = excluded.updated_at
+            """,
+            (
+                log_date,
+                max(0, int(work_seconds)),
+                max(0, int(completed_sessions)),
+                datetime.now().isoformat(timespec="seconds"),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_productivity_entry(log_date: str) -> dict:
+    """Return productivity totals for a single date."""
+    conn = _get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT log_date, work_seconds, completed_sessions
+            FROM productivity_log
+            WHERE log_date = ?
+            """,
+            (log_date,),
+        ).fetchone()
+        if row is None:
+            return {
+                "log_date": log_date,
+                "work_seconds": 0,
+                "completed_sessions": 0,
+            }
+        return {
+            "log_date": row[0],
+            "work_seconds": int(row[1]),
+            "completed_sessions": int(row[2]),
+        }
+    finally:
+        conn.close()
+
+
+def get_productivity_log(limit: int = 7) -> list[dict]:
+    """Return recent daily productivity totals, newest first."""
+    conn = _get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT log_date, work_seconds, completed_sessions
+            FROM productivity_log
+            ORDER BY log_date DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [
+            {
+                "log_date": row[0],
+                "work_seconds": int(row[1]),
+                "completed_sessions": int(row[2]),
+            }
+            for row in rows
+        ]
+    finally:
+        conn.close()
 
