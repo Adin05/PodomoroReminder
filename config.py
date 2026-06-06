@@ -171,3 +171,28 @@ def get_productivity_log(limit: int = 7) -> list[dict]:
     finally:
         conn.close()
 
+
+def get_productivity_log_by_date_range(start_date: str, end_date: str) -> list[dict]:
+    """Return daily productivity totals between start_date and end_date (inclusive), oldest first."""
+    conn = _get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT log_date, work_seconds, completed_sessions
+            FROM productivity_log
+            WHERE log_date >= ? AND log_date <= ?
+            ORDER BY log_date ASC
+            """,
+            (start_date, end_date),
+        ).fetchall()
+        return [
+            {
+                "log_date": row[0],
+                "work_seconds": int(row[1]),
+                "completed_sessions": int(row[2]),
+            }
+            for row in rows
+        ]
+    finally:
+        conn.close()
+

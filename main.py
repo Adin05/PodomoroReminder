@@ -6,14 +6,15 @@ A simple black & white Pomodoro timer with system tray support.
 import sys
 import os
 import time
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QSpinBox, QFileDialog, QSystemTrayIcon,
-    QMenu, QCheckBox, QGroupBox, QFrame
+    QMenu, QCheckBox, QGroupBox, QFrame, QDateEdit, QMessageBox,
+    QTabWidget
 )
-from PyQt6.QtCore import Qt, QTimer, QUrl, QPoint, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QUrl, QPoint, QDate, pyqtSignal
 from PyQt6.QtGui import QIcon, QFont, QAction, QPixmap, QPainter, QColor
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 
@@ -21,6 +22,7 @@ from config import (
     add_productivity_log,
     get_productivity_entry,
     get_productivity_log,
+    get_productivity_log_by_date_range,
     load_config,
     save_config,
 )
@@ -218,6 +220,37 @@ QLabel#dailyLogLabel {
     font-size: 12px;
     color: #555555;
     line-height: 140%;
+}
+
+QTabWidget::pane {
+    border: 1.5px solid #cccccc;
+    border-radius: 8px;
+    background-color: #ffffff;
+    top: -1px;
+}
+
+QTabBar::tab {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 8px 18px;
+    border: 1.5px solid #cccccc;
+    border-bottom: none;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    background-color: #eeeeee;
+    color: #666666;
+    margin-right: 2px;
+}
+
+QTabBar::tab:selected {
+    background-color: #111111;
+    color: #ffffff;
+    border-color: #111111;
+}
+
+QTabBar::tab:hover:!selected {
+    background-color: #dddddd;
+    color: #111111;
 }
 """
 
@@ -426,7 +459,7 @@ class PomodoroApp(QMainWindow):
 
         # ── Window settings ────────────────────────────────────────────
         self.setWindowTitle("Pomodoro Reminder")
-        self.setFixedSize(420, 760)
+        self.setFixedSize(420, 620)
         self.setWindowIcon(create_app_icon())
 
     # ═══════════════════════════════════════════════════════════════════
@@ -483,9 +516,14 @@ class PomodoroApp(QMainWindow):
 
         layout.addLayout(btn_layout)
 
-        # ── Productivity log ───────────────────────────────────────────
-        log_group = QGroupBox("Daily Productivity")
-        log_layout = QVBoxLayout(log_group)
+        # ── Tab Widget ─────────────────────────────────────────────────
+        self.tab_widget = QTabWidget()
+        self.tab_widget.setObjectName("mainTabs")
+
+        # ── Tab 1: Daily Productivity ──────────────────────────────────
+        log_tab = QWidget()
+        log_layout = QVBoxLayout(log_tab)
+        log_layout.setContentsMargins(12, 12, 12, 12)
         log_layout.setSpacing(8)
 
         self.today_work_label = QLabel()
@@ -498,17 +536,13 @@ class PomodoroApp(QMainWindow):
         self.daily_log_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         log_layout.addWidget(self.daily_log_label)
 
-        layout.addWidget(log_group)
+        log_layout.addStretch()
+        self.tab_widget.addTab(log_tab, "📊 Productivity")
 
-        # ── Separator ─────────────────────────────────────────────────
-        sep = QFrame()
-        sep.setObjectName("separator")
-        sep.setFrameShape(QFrame.Shape.HLine)
-        layout.addWidget(sep)
-
-        # ── Settings group ────────────────────────────────────────────
-        settings_group = QGroupBox("Settings")
-        settings_layout = QVBoxLayout(settings_group)
+        # ── Tab 2: Settings ────────────────────────────────────────────
+        settings_tab = QWidget()
+        settings_layout = QVBoxLayout(settings_tab)
+        settings_layout.setContentsMargins(12, 12, 12, 12)
         settings_layout.setSpacing(10)
 
         # Work duration
@@ -552,15 +586,45 @@ class PomodoroApp(QMainWindow):
 
         settings_layout.addLayout(sound_row)
 
-
         # Show floating widget
         self.widget_check = QCheckBox("Show floating widget")
         self.widget_check.setChecked(True)  # Default; overwritten by _apply_config
         self.widget_check.stateChanged.connect(self._on_widget_checkbox_changed)
         settings_layout.addWidget(self.widget_check)
 
-        layout.addWidget(settings_group)
-        layout.addStretch()
+        settings_layout.addStretch()
+        self.tab_widget.addTab(settings_tab, "⚙️ Settings")
+
+        # ── Tab 3: Export Log ──────────────────────────────────────────
+        export_tab = QWidget()
+        export_layout = QVBoxLayout(export_tab)
+        export_layout.setContentsMargins(12, 12, 12, 12)
+        export_layout.setSpacing(8)
+
+        date_row = QHBoxLayout()
+        date_row.addWidget(QLabel("From:"))
+        self.export_start_date = QDateEdit()
+        self.export_start_date.setCalendarPopup(True)
+        self.export_start_date.setDisplayFormat("yyyy-MM-dd")
+        self.export_start_date.setDate(QDate.currentDate().addDays(-30))
+        date_row.addWidget(self.export_start_date)
+
+        date_row.addWidget(QLabel("To:"))
+        self.export_end_date = QDateEdit()
+        self.export_end_date.setCalendarPopup(True)
+        self.export_end_date.setDisplayFormat("yyyy-MM-dd")
+        self.export_end_date.setDate(QDate.currentDate())
+        date_row.addWidget(self.export_end_date)
+        export_layout.addLayout(date_row)
+
+        self.export_btn = QPushButton("📄  Export to YAML")
+        self.export_btn.clicked.connect(self._on_export_yml)
+        export_layout.addWidget(self.export_btn)
+
+        export_layout.addStretch()
+        self.tab_widget.addTab(export_tab, "📄 Export")
+
+        layout.addWidget(self.tab_widget)
         self._update_productivity_log_display()
 
     def _build_tray(self):
@@ -923,6 +987,92 @@ class PomodoroApp(QMainWindow):
         if not self.is_running:
             self._update_timer_display(self.work_spin.value() * 60)
         self._save_debounce.start()  # Restart debounce timer
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Export
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _on_export_yml(self):
+        """Export productivity log to a YAML file."""
+        try:
+            import yaml
+        except ImportError:
+            QMessageBox.critical(
+                self,
+                "Missing Dependency",
+                'PyYAML is required.\n\nRun: pip install pyyaml',
+            )
+            return
+
+        start = self.export_start_date.date().toPyDate().isoformat()
+        end = self.export_end_date.date().toPyDate().isoformat()
+
+        if start > end:
+            QMessageBox.warning(self, "Invalid Range", "Start date must be before end date.")
+            return
+
+        logs = get_productivity_log_by_date_range(start, end)
+        if not logs:
+            QMessageBox.information(self, "No Data", "No productivity data found for the selected range.")
+            return
+
+        # Ask user where to save
+        default_name = f"pomodoro_log_{start}_to_{end}.yml"
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save YAML File",
+            default_name,
+            "YAML Files (*.yml *.yaml)",
+        )
+        if not path:
+            return
+
+        # Build export data
+        total_seconds = 0
+        total_sessions = 0
+        daily_entries = []
+        for entry in logs:
+            secs = entry["work_seconds"]
+            sessions = entry["completed_sessions"]
+            total_seconds += secs
+            total_sessions += sessions
+
+            hrs, remainder = divmod(secs, 3600)
+            mins, _ = divmod(remainder, 60)
+            duration_str = f"{hrs}h {mins:02d}m" if hrs else f"{mins}m"
+
+            daily_entries.append({
+                "date": entry["log_date"],
+                "work_duration": duration_str,
+                "work_minutes": round(secs / 60, 1),
+                "completed_sessions": sessions,
+            })
+
+        total_hrs, total_rem = divmod(total_seconds, 3600)
+        total_mins, _ = divmod(total_rem, 60)
+        total_dur = f"{total_hrs}h {total_mins:02d}m" if total_hrs else f"{total_mins}m"
+
+        export_data = {
+            "pomodoro_log": {
+                "range": {"from": start, "to": end},
+                "summary": {
+                    "total_days": len(daily_entries),
+                    "total_work_duration": total_dur,
+                    "total_work_minutes": round(total_seconds / 60, 1),
+                    "total_completed_sessions": total_sessions,
+                },
+                "daily": daily_entries,
+            }
+        }
+
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.dump(export_data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+        QMessageBox.information(
+            self,
+            "Export Complete",
+            f"Exported {len(logs)} days to:\n{path}",
+        )
 
 
     # ═══════════════════════════════════════════════════════════════════
