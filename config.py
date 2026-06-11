@@ -40,9 +40,17 @@ def _get_connection() -> sqlite3.Connection:
             log_date           TEXT PRIMARY KEY,
             work_seconds       INTEGER NOT NULL DEFAULT 0,
             completed_sessions INTEGER NOT NULL DEFAULT 0,
+            first_start_time   TEXT,
+            last_end_time      TEXT,
             updated_at         TEXT NOT NULL
         )
     """)
+    # Migrate older databases that lack the new columns
+    for col in ("first_start_time TEXT", "last_end_time TEXT"):
+        try:
+            conn.execute(f"ALTER TABLE productivity_log ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass  # column already exists
     conn.commit()
     return conn
 
@@ -90,29 +98,47 @@ def save_config(config: dict):
         conn.close()
 
 
-def add_productivity_log(log_date: str, work_seconds: int = 0, completed_sessions: int = 0):
-    """Add daily productivity totals for the given ISO date."""
-    if work_seconds <= 0 and completed_sessions <= 0:
+def add_productivity_log(
+    log_date: str,
+    work_seconds: int = 0,
+    completed_sessions: int = 0,
+    start_time: str | None = None,
+    end_time: str | None = None,
+):
+    """Add daily productivity totals for the given ISO date.
+
+    start_time is recorded only once (first session of the day).
+    end_time is always updated to the latest value.
+    """
+    if work_seconds <= 0 and completed_sessions <= 0 and not start_time and not end_time:
         return
 
+    now = datetime.now().isoformat(timespec="seconds")
     conn = _get_connection()
     try:
         conn.execute(
             """
             INSERT INTO productivity_log (
-                log_date, work_seconds, completed_sessions, updated_at
+                log_date, work_seconds, completed_sessions,
+                first_start_time, last_end_time, updated_at
             )
-            VALUES (?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(log_date) DO UPDATE SET
                 work_seconds = work_seconds + excluded.work_seconds,
                 completed_sessions = completed_sessions + excluded.completed_sessions,
+                first_start_time = COALESCE(
+                    productivity_log.first_start_time, excluded.first_start_time
+                ),
+                last_end_time = COALESCE(excluded.last_end_time, productivity_log.last_end_time),
                 updated_at = excluded.updated_at
             """,
             (
                 log_date,
                 max(0, int(work_seconds)),
                 max(0, int(completed_sessions)),
-                datetime.now().isoformat(timespec="seconds"),
+                start_time,
+                end_time,
+                now,
             ),
         )
         conn.commit()
@@ -126,7 +152,8 @@ def get_productivity_entry(log_date: str) -> dict:
     try:
         row = conn.execute(
             """
-            SELECT log_date, work_seconds, completed_sessions
+            SELECT log_date, work_seconds, completed_sessions,
+                   first_start_time, last_end_time
             FROM productivity_log
             WHERE log_date = ?
             """,
@@ -137,11 +164,15 @@ def get_productivity_entry(log_date: str) -> dict:
                 "log_date": log_date,
                 "work_seconds": 0,
                 "completed_sessions": 0,
+                "first_start_time": None,
+                "last_end_time": None,
             }
         return {
             "log_date": row[0],
             "work_seconds": int(row[1]),
             "completed_sessions": int(row[2]),
+            "first_start_time": row[3],
+            "last_end_time": row[4],
         }
     finally:
         conn.close()
@@ -153,7 +184,8 @@ def get_productivity_log(limit: int = 7) -> list[dict]:
     try:
         rows = conn.execute(
             """
-            SELECT log_date, work_seconds, completed_sessions
+            SELECT log_date, work_seconds, completed_sessions,
+                   first_start_time, last_end_time
             FROM productivity_log
             ORDER BY log_date DESC
             LIMIT ?
@@ -165,6 +197,8 @@ def get_productivity_log(limit: int = 7) -> list[dict]:
                 "log_date": row[0],
                 "work_seconds": int(row[1]),
                 "completed_sessions": int(row[2]),
+                "first_start_time": row[3],
+                "last_end_time": row[4],
             }
             for row in rows
         ]
@@ -178,7 +212,8 @@ def get_productivity_log_by_date_range(start_date: str, end_date: str) -> list[d
     try:
         rows = conn.execute(
             """
-            SELECT log_date, work_seconds, completed_sessions
+            SELECT log_date, work_seconds, completed_sessions,
+                   first_start_time, last_end_time
             FROM productivity_log
             WHERE log_date >= ? AND log_date <= ?
             ORDER BY log_date ASC
@@ -190,6 +225,8 @@ def get_productivity_log_by_date_range(start_date: str, end_date: str) -> list[d
                 "log_date": row[0],
                 "work_seconds": int(row[1]),
                 "completed_sessions": int(row[2]),
+                "first_start_time": row[3],
+                "last_end_time": row[4],
             }
             for row in rows
         ]

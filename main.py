@@ -704,6 +704,16 @@ class PomodoroApp(QMainWindow):
             return
 
         self._refresh_today_log()
+
+        # Log start time (only first start of the day is kept)
+        now_time = datetime.now().strftime("%H:%M:%S")
+        add_productivity_log(
+            self.current_log_date,
+            work_seconds=0,
+            completed_sessions=0,
+            start_time=now_time,
+        )
+
         self.is_running = True
         self.is_work_phase = True
         self.phase_duration = self.work_spin.value() * 60
@@ -853,6 +863,12 @@ class PomodoroApp(QMainWindow):
         if today == self.current_log_date:
             return
 
+        # Date changed — reset session counters
+        self.total_work_seconds_today = 0
+        self._work_accumulated = 0
+        self._logged_work_seconds_this_phase = 0
+        self._update_total_work_display()
+
         self.current_log_date = today
         today_log = get_productivity_entry(self.current_log_date)
         self.daily_work_seconds = today_log["work_seconds"]
@@ -873,10 +889,12 @@ class PomodoroApp(QMainWindow):
         if new_work_seconds <= 0 and completed_sessions <= 0:
             return
 
+        end_time = datetime.now().strftime("%H:%M:%S")
         add_productivity_log(
             self.current_log_date,
             work_seconds=new_work_seconds,
             completed_sessions=completed_sessions,
+            end_time=end_time,
         )
         self.daily_work_seconds += max(0, new_work_seconds)
         self.daily_completed_sessions += completed_sessions
@@ -912,10 +930,18 @@ class PomodoroApp(QMainWindow):
 
         lines = ["Last 7 days:"]
         for item in logs:
+            time_range = ""
+            s = item.get("first_start_time") or ""
+            e = item.get("last_end_time") or ""
+            if s and e:
+                time_range = f"  [{s} – {e}]"
+            elif s:
+                time_range = f"  [from {s}]"
             lines.append(
                 f"{item['log_date']}  "
                 f"{self._format_duration(item['work_seconds'])}  "
                 f"({item['completed_sessions']} sessions)"
+                f"{time_range}"
             )
         self.daily_log_label.setText("\n".join(lines))
 
@@ -1043,6 +1069,8 @@ class PomodoroApp(QMainWindow):
 
             daily_entries.append({
                 "date": entry["log_date"],
+                "start_time": entry.get("first_start_time") or "",
+                "end_time": entry.get("last_end_time") or "",
                 "work_duration": duration_str,
                 "work_minutes": round(secs / 60, 1),
                 "completed_sessions": sessions,
