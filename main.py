@@ -399,6 +399,7 @@ class FloatingWidget(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
+        self.setFixedSize(180, 70)
         self.visibility_changed.emit(True)
 
 
@@ -443,6 +444,14 @@ class PomodoroApp(QMainWindow):
         self._save_debounce.setSingleShot(True)
         self._save_debounce.setInterval(500)
         self._save_debounce.timeout.connect(self._save_current_config)
+
+        # ── System Monitor (Sleep & Idle Detection) ───────────────────
+        self.last_tick_time = time.monotonic()
+        self.last_interaction_time = time.monotonic()
+        self.system_monitor_timer = QTimer(self)
+        self.system_monitor_timer.setInterval(5000)
+        self.system_monitor_timer.timeout.connect(self._check_system_state)
+        self.system_monitor_timer.start()
 
         # ── Floating widget ────────────────────────────────────────────
         self.floating_widget = FloatingWidget()
@@ -698,8 +707,13 @@ class PomodoroApp(QMainWindow):
     # Timer Logic
     # ═══════════════════════════════════════════════════════════════════
 
+    def _record_interaction(self):
+        """Record the time of the last user interaction."""
+        self.last_interaction_time = time.monotonic()
+
     def _on_start(self):
         """Start or resume the Pomodoro timer."""
+        self._record_interaction()
         if self.is_running:
             return
 
@@ -739,6 +753,7 @@ class PomodoroApp(QMainWindow):
 
     def _on_stop(self):
         """Stop the timer and reset."""
+        self._record_interaction()
         self.is_running = False
         self._record_current_work_progress()
         self.tick_timer.stop()
@@ -1009,7 +1024,8 @@ class PomodoroApp(QMainWindow):
     # ═══════════════════════════════════════════════════════════════════
 
     def _on_settings_changed(self):
-        """Handle work/break spin changes (debounced save)."""
+        """Triggered whenever user tweaks the spinboxes or auto-start checks."""
+        self._record_interaction()
         if not self.is_running:
             self._update_timer_display(self.work_spin.value() * 60)
         self._save_debounce.start()  # Restart debounce timer
@@ -1109,11 +1125,14 @@ class PomodoroApp(QMainWindow):
 
     def _on_tray_activated(self, reason):
         """Handle tray icon activation (double-click to show)."""
+        self._record_interaction()
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
             self._show_window()
 
     def _show_window(self):
         """Show and activate the main window."""
+        self._record_interaction()
+        self.setFixedSize(420, 620)
         self.showNormal()
         self.activateWindow()
         self.raise_()
@@ -1141,6 +1160,7 @@ class PomodoroApp(QMainWindow):
         self.setWindowFlags(
             self.windowFlags() & ~Qt.WindowType.WindowStaysOnTopHint
         )
+        self.setFixedSize(420, 620)
         self.show()
 
     def _on_widget_visibility_changed(self, visible: bool):
@@ -1186,6 +1206,23 @@ class PomodoroApp(QMainWindow):
         self.tray_icon.hide()
         QApplication.instance().quit()
 
+    def _check_system_state(self):
+        """Check for sleep/hibernate and idle states."""
+        current_time = time.monotonic()
+
+        # 1. Sleep/Hibernate Detection
+        # If the gap between timer ticks is excessively large (e.g., > 30s)
+        if current_time - self.last_tick_time > 30:
+            self._quit_app()
+            return
+            
+        self.last_tick_time = current_time
+
+        # 2. Idle Detection
+        # If not running and hasn't been interacted with for > 5 minutes (300s)
+        if not self.is_running and (current_time - self.last_interaction_time > 300):
+            self._quit_app()
+
     # ═══════════════════════════════════════════════════════════════════
     # Window Events
     # ═══════════════════════════════════════════════════════════════════
@@ -1215,6 +1252,10 @@ class PomodoroApp(QMainWindow):
 # ═══════════════════════════════════════════════════════════════════════
 
 def main():
+    # Fix High DPI scaling rounding issues
+    QApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setStyleSheet(STYLESHEET)
